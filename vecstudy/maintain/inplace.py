@@ -58,6 +58,18 @@ class InPlaceMaintainer(IndexMaintainer):
 
     # ------------------------------------------------------------------
     def insert(self, vid: VectorId, vec: np.ndarray) -> None:
+        if self._cfg_index.build_mode == "r5":
+            if vid in self._tombstones:
+                raise ValueError("R5 does not support reusing a tombstoned vector ID")
+            ids = {int(v) for p in self._segment.postings for v in p.owned
+                   if self._segment.is_alive(int(v))}
+            if vid in ids:
+                raise ValueError("R5 insert would duplicate primary ownership")
+            ids.add(vid)
+            self._segment = Segment.build(np.array(sorted(ids), dtype=np.int64),
+                self._vectors, self._cfg_index, self._counters,
+                tombstones=set(self._tombstones))
+            return
         leaf_level = self._segment.levels[-1]
         sims = sim_one_to_many(vec, leaf_level.centroids, self._counters, "routing")
         pid = int(_stable_top_k(-sims, 1)[0])
@@ -68,6 +80,13 @@ class InPlaceMaintainer(IndexMaintainer):
             self._split(pid)
 
     def delete(self, vid: VectorId) -> None:
+        if self._cfg_index.build_mode == "r5":
+            self._tombstones.add(vid)
+            ids = np.array(sorted({int(v) for p in self._segment.postings for v in p.owned
+                                   if int(v) not in self._tombstones}), dtype=np.int64)
+            self._segment = Segment.build(ids, self._vectors, self._cfg_index,
+                self._counters, tombstones=set(self._tombstones))
+            return
         self._tombstones.add(vid)
         self._segment.mark_deleted(vid)
         for pid, p in enumerate(self._segment.postings):

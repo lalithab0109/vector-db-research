@@ -10,6 +10,7 @@ DESIGN §6.6:
 from __future__ import annotations
 
 import numpy as np
+import math
 
 from ..core.types import VectorId
 from ..core.config import IndexConfig, MaintainConfig
@@ -35,11 +36,20 @@ class OutOfPlaceMaintainer(IndexMaintainer):
         self._memtable: list[VectorId] = []          # buffered, not yet sealed
         self._sealed: list[Segment] = []             # sealed segments
         self._tombstones: set[VectorId] = set()      # global tombstone set
+        self._r5_inserted_ids: set[VectorId] = set()
 
     # ------------------------------------------------------------------
     def insert(self, vid: VectorId, vec: np.ndarray) -> None:
+        limit = self._cfg_maintain.memtable_limit
+        if self._cfg_index.build_mode == "r5":
+            if vid in self._r5_inserted_ids or vid in self._tombstones:
+                raise ValueError("R5 insert requires a new unique vector ID")
+            self._r5_inserted_ids.add(vid)
+            # The unsealed memtable is a single posting too: bound its owned
+            # capacity without changing the baseline buffering policy.
+            limit = min(limit, math.ceil(self._cfg_index.alpha * self._cfg_index.target_capacity))
         self._memtable.append(vid)
-        if len(self._memtable) >= self._cfg_maintain.memtable_limit:
+        if len(self._memtable) >= limit:
             self._flush()
 
     def delete(self, vid: VectorId) -> None:

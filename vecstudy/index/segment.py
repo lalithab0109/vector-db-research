@@ -18,7 +18,7 @@ import numpy as np
 from ..core.types import HierarchyLevel, Posting, PostingId, VectorId
 from ..core.config import IndexConfig
 from ..core.metrics import Counters
-from .postings import assign, fetch_posting
+from .postings import assign, fetch_posting, from_primary_labels
 from .hierarchy import build_hierarchy
 
 
@@ -36,6 +36,7 @@ class Segment:
         self.postings = postings          # index == PostingId
         self.vectors = vectors
         self.tombstones: set[VectorId] = tombstones or set()
+        self.build_stats = {"oversized_splits": 0, "tiny_merges": 0}
 
     @property
     def n_postings(self) -> int:
@@ -58,9 +59,23 @@ class Segment:
         tombstones: set[VectorId] | None = None,
     ) -> "Segment":
         """Cluster vids and build the full hierarchy."""
+        if cfg.build_mode == "r5":
+            if len(np.unique(vids)) != len(vids) or np.any(vids < 0) or np.any(vids >= len(vectors)):
+                raise ValueError("R5 vector IDs must be unique and within the vector array")
         X = vectors[vids].astype(np.float32)
         N = len(vids)
         D = vectors.shape[1]
+
+        if cfg.build_mode == "r5":
+            from ..core.r5_leaves import build_r5_leaves
+            centroids, labels, stats = build_r5_leaves(X, cfg, counters)
+            postings = [Posting(p.id, p.centroid, vids[p.members], vids[p.owned])
+                        for p in from_primary_labels(centroids, labels)]
+            levels = build_hierarchy(centroids, cfg.branching_factor, cfg.seed,
+                                     depth=cfg.depth, counters=counters)
+            segment = cls(levels, postings, vectors, tombstones=tombstones)
+            segment.build_stats = stats
+            return segment
 
         n_leaves = max(1, round(N / cfg.leaf_size))
 

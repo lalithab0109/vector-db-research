@@ -41,6 +41,7 @@ def make_result_row(
     unit_count: int,
     dataset_checksum: str,
     extra: dict | None = None,
+    query_count: int = 0,
 ) -> dict:
     """Assemble a flat result dict ready for Parquet serialisation."""
     row: dict = {}
@@ -52,6 +53,14 @@ def make_result_row(
     row["posting_size_p50"]  = float(posting_size_dist.get("p50", 0.0))
     row["posting_size_p99"]  = float(posting_size_dist.get("p99", 0.0))
     row["posting_size_max"]  = int(posting_size_dist.get("max", 0))
+    mean = row["posting_size_mean"]
+    row["posting_size_p99_over_mean"] = row["posting_size_p99"] / mean if mean else 0.0
+    row["posting_size_max_over_mean"] = row["posting_size_max"] / mean if mean else 0.0
+    # Member occurrences, including repeated replicas and tombstones scored.
+    # Keep the original aggregate vectors_scanned field unchanged.
+    row["vectors_scanned_per_query"] = (
+        counters_dict.get("vectors_scanned", 0) / query_count if query_count else 0.0
+    )
     row["depth"] = int(depth)
     row["unit_count"] = int(unit_count)
     row["dataset_checksum"] = dataset_checksum

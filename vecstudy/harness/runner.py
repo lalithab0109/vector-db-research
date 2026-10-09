@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -31,20 +33,20 @@ from ..harness.datasets import (
     l2_normalize, compute_ground_truth, recall_at_k, dataset_checksum,
 )
 from ..harness.results import make_result_row, append_result
+from ..harness.diagnostics import geometry_diagnostics
 
 
-def run_experiment(exp: ExperimentConfig, out_dir: str | Path) -> dict:
+def run_experiment(exp: ExperimentConfig, out_dir: str | Path, *, diagnostics: bool = False) -> dict:
     """Run one experiment; write result row to Parquet; return row dict."""
     out_dir = Path(out_dir)
     base, queries, gt = _load_dataset(exp.dataset, exp.query.k)
     dim = base.shape[1]
     dcs = dataset_checksum(base)
-    cfg_idx = IndexConfig(dim=dim, leaf_size=exp.index.leaf_size,
-        branching_factor=exp.index.branching_factor, depth=exp.index.depth,
-        delta=exp.index.delta, rng_rule=exp.index.rng_rule, seed=exp.index.seed)
+    cfg_idx = replace(exp.index, dim=dim)
     cfg_q, cfg_m = exp.query, exp.maintain
     counters = Counters()
     vids = np.arange(len(base), dtype=np.int64)
+    build_start = time.perf_counter()
     if cfg_m.strategy == "outofplace":
         maint = OutOfPlaceMaintainer(base, cfg_idx, cfg_m, counters)
         for vid in vids:
@@ -55,6 +57,7 @@ def run_experiment(exp: ExperimentConfig, out_dir: str | Path) -> dict:
     else:
         maint = InPlaceMaintainer(base, cfg_idx, cfg_m, counters, initial_vids=vids)
     units = maint.searchable_units()
+    build_time = time.perf_counter() - build_start
     all_res: list[list[int]] = []
     total_q = Counters()
     for q_vec in queries:
@@ -70,11 +73,19 @@ def run_experiment(exp: ExperimentConfig, out_dir: str | Path) -> dict:
     tot_owned = sum(len(p.owned) for u in units for p in u.postings)
     tot_mem   = sum(len(p.members) for u in units for p in u.postings)
     bloat = (tot_mem / tot_owned - 1.0) if tot_owned else 0.0
+    extra = {"build_time_seconds": build_time,
+             "final_leaf_postings": sum(len(u.postings) for u in units),
+             "oversized_splits": sum(u.build_stats["oversized_splits"] for u in units),
+             "tiny_merges": sum(u.build_stats["tiny_merges"] for u in units)}
+    if diagnostics or cfg_idx.build_mode == "r5":
+        extra.update(geometry_diagnostics(units))
     row = make_result_row(
         config_dict=exp.to_dict(),
         counters_dict={**total_q.search_dict(), **counters.maintain_dict()},
         recall=recall, bloat=bloat, posting_size_dist=psd,
-        depth=depth, unit_count=len(units), dataset_checksum=dcs)
+        depth=depth, unit_count=len(units), dataset_checksum=dcs,
+        query_count=len(all_res),
+        extra=extra)
     append_result(row, out_dir)
     return row
 
@@ -104,12 +115,15 @@ def cmd_single(args) -> None:
     beam = tuple(int(b) for b in args.beam.split(","))
     cfg = ExperimentConfig(
         index=IndexConfig(dim=0, branching_factor=args.branching_factor,
-                          depth=args.depth, delta=args.delta, seed=args.seed),
+                          depth=args.depth, delta=args.delta, seed=args.seed,
+                          build_mode=args.build_mode, target_capacity=args.target_capacity,
+                          lambda_balance=args.lambda_balance, alpha=args.alpha,
+                          tiny_cluster_fraction=args.tiny_cluster_fraction, max_iter=args.max_iter),
         query=QueryConfig(k=args.k, beam_widths=beam, n_postings=args.n_postings),
         maintain=MaintainConfig(strategy=args.strategy),
         dataset=args.dataset,
     )
-    row = run_experiment(cfg, args.out)
+    row = run_experiment(cfg, args.out, diagnostics=args.diagnostics)
     print(f"recall@{args.k}={row['recall']:.4f}  bloat={row['bloat']:.3f}")
 
 
@@ -130,7 +144,7 @@ def cmd_sweep(args) -> None:
                                query=QueryConfig(**qry_kw),
                                maintain=MaintainConfig(**mnt_kw), dataset=dataset)
         try:
-            row = run_experiment(cfg, args.out)
+            row = run_experiment(cfg, args.out, diagnostics=args.diagnostics)
             print(f"[sweep] recall={row['recall']:.4f}  {cell}")
         except Exception as e:
             print(f"[sweep] ERROR {cell}: {e}", file=sys.stderr)
@@ -150,10 +164,20 @@ def main() -> None:
     sp.add_argument("--n-postings", dest="n_postings", type=int, default=1)
     sp.add_argument("--branching-factor", dest="branching_factor", type=int, default=16)
     sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--build-mode", choices=["baseline", "r5"], default="baseline")
+    sp.add_argument("--target-capacity", type=int, default=800)
+    sp.add_argument("--lambda-balance", type=float, default=0.25)
+    sp.add_argument("--alpha", type=float, default=1.5)
+    sp.add_argument("--tiny-cluster-fraction", type=float, default=0.10)
+    sp.add_argument("--max-iter", type=int, default=15)
+    sp.add_argument("--diagnostics", action="store_true",
+                    help="Report batched final-leaf IP/L2 and owner/IP diagnostics (extra build work)")
     sp.set_defaults(func=cmd_single)
     sw = sub.add_parser("sweep")
     sw.add_argument("--config", required=True)
     sw.add_argument("--out", default="results/")
+    sw.add_argument("--diagnostics", action="store_true",
+                    help="Report batched geometry diagnostics for each sweep cell")
     sw.set_defaults(func=cmd_sweep)
     args = parser.parse_args()
     args.func(args)

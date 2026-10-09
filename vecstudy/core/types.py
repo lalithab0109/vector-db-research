@@ -26,8 +26,8 @@ class Posting:
     Invariants (enforced by tests/test_invariants.py):
       - owned ⊆ members
       - every live VectorId is owned by exactly one posting
-      - for every vid in owned, the centroid of this posting is the nearest
-        posting centroid (NPA invariant)
+      - baseline bulk ownership is nearest by inner product (NPA);
+        R5 ownership is authoritative and capacity-aware, so NPA is not required
     """
     id: PostingId
     centroid: np.ndarray        # float32, shape (D,)

@@ -21,6 +21,34 @@ class IndexConfig:
     delta: float | None = None      # None → no overlap; relative threshold §6.4
     rng_rule: bool = False          # SPANN relative-neighbourhood rule
     seed: int = 0
+    build_mode: Literal["baseline", "r5"] = "baseline"
+    target_capacity: int = 800
+    lambda_balance: float = 0.25
+    alpha: float = 1.5
+    tiny_cluster_fraction: float = 0.10
+    max_iter: int = 15
+
+    def __post_init__(self) -> None:
+        if self.build_mode not in ("baseline", "r5"):
+            raise ValueError("build_mode must be baseline or r5")
+        if self.build_mode == "r5":
+            import math
+            if self.delta is not None or self.rng_rule:
+                raise ValueError("R5 currently requires delta=None and rng_rule=False")
+            if not isinstance(self.target_capacity, int) or self.target_capacity <= 0:
+                raise ValueError("target_capacity must be a positive integer")
+            if not math.isfinite(self.alpha) or self.alpha <= 0:
+                raise ValueError("alpha must be finite and positive")
+            if not math.isfinite(self.alpha * self.target_capacity):
+                raise ValueError("alpha * target_capacity must be finite")
+            if self.branching_factor < 2 or (self.depth is not None and self.depth < 1):
+                raise ValueError("R5 requires branching_factor >= 2 and depth >= 1")
+            if not math.isfinite(self.lambda_balance) or self.lambda_balance < 0:
+                raise ValueError("lambda_balance must be finite and nonnegative")
+            if not math.isfinite(self.tiny_cluster_fraction) or not 0 <= self.tiny_cluster_fraction <= 1:
+                raise ValueError("tiny_cluster_fraction must lie in [0, 1]")
+            if not isinstance(self.max_iter, int) or self.max_iter <= 0:
+                raise ValueError("max_iter must be a positive integer")
 
     def to_dict(self) -> dict:
         return asdict(self)

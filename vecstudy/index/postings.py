@@ -19,6 +19,24 @@ from ..core.distance import sim_many_to_many
 POSTING_HEADER_BYTES = 64
 
 
+def from_primary_labels(centroids: np.ndarray, labels: np.ndarray) -> list[Posting]:
+    """Construct replica-free local-ID postings from authoritative labels.
+
+    This function makes no geometric assignment decisions. Replication remains
+    a separate concern; R5 callers currently require delta=None.
+    """
+    labels = np.asarray(labels)
+    if labels.ndim != 1 or not np.issubdtype(labels.dtype, np.integer):
+        raise ValueError("Primary labels must be a one-dimensional integer array")
+    if np.any(labels < 0) or np.any(labels >= len(centroids)):
+        raise ValueError("Primary labels outside centroid range")
+    postings = []
+    for pid, centroid in enumerate(centroids):
+        owned = np.flatnonzero(labels == pid).astype(np.int64)
+        postings.append(Posting(pid, centroid.copy(), owned.copy(), owned))
+    return postings
+
+
 def assign(
     X: np.ndarray,
     centroids: np.ndarray,
