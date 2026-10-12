@@ -186,3 +186,27 @@ def summarize_boundary_distribution(
         "quantiles": quantiles,
         "thresholds": threshold_stats,
     }
+
+
+def choose_delta(r_values: np.ndarray, target_bloat: float) -> float | None:
+    """Inclusive empirical inverse CDF, without interpolation or mutation.
+
+    Keep +inf in the population denominator, but reject a budget requiring an
+    infinite threshold. Zero budget means no overlap, even when r contains zeros.
+    Ties (and ceil rounding) can overshoot the calibration target.
+    """
+    r = np.asarray(r_values, dtype=np.float64)
+    if r.ndim != 1 or not len(r):
+        raise ValueError("r_values must be a nonempty one-dimensional array")
+    if np.any(np.isnan(r)) or np.any(r < 0):
+        raise ValueError("r_values must be nonnegative, without NaN or -inf")
+    b = float(target_bloat)
+    if not math.isfinite(b) or not 0 <= b <= 1:
+        raise ValueError("target_bloat must be finite and within [0, 1]")
+    if b == 0:
+        return None
+    k = math.ceil(len(r) * b)
+    delta = float(np.partition(r, k - 1)[k - 1])
+    if not math.isfinite(delta):
+        raise ValueError("target_bloat requires an infinite threshold; +inf retained in population")
+    return delta
